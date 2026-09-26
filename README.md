@@ -29,26 +29,45 @@
 - 查看最近吃过的内容，餐厅和菜谱都会进入最近 3 天的去重逻辑
 - 偏好、用餐状态和历史记录保存在当前浏览器本地
 
-## 当前原型说明
+## 数据与隐私说明
 
-目前餐厅数据是页面内置的演示样例，用来体验距离、预算、口味和营养偏好筛选；高德按钮会打开地图搜索。接入真实的高德附近餐厅查询需要配置后端服务和高德 Web 服务 API Key。菜谱为内置示例，热量是估算范围，仅供参考。
+- 餐厅搜索可通过服务端函数调用高德 Web 服务 API；高德 Key 只保存在部署平台的环境变量中，不放进网页代码
+- 餐厅距离、人均价格等以高德实际返回为准，部分商户可能没有均价数据
+- 自制菜谱库由开源项目 [YunYouJun/cook](https://github.com/YunYouJun/cook) 的 CSV 数据在构建时清洗生成，当前包含约 600 道菜；来源许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- 菜谱原始数据不提供可靠的精确热量和烹饪时间，因此页面仅展示食材、难度、厨具和粗粒度营养标签，不编造精确数字
+- 偏好、用餐状态和历史记录仅保存在当前浏览器的 `localStorage` 中
 
 这是一个产品 MVP 和作品集项目，不提供外卖、团购或在线点餐。
 
-## 本地运行
+## 本地预览
 
-项目是纯静态页面，不需要安装依赖或构建。可以直接用浏览器打开 dist/index.html，也可以启动本地静态服务器：
+项目不需要安装依赖或构建。在仓库根目录启动本地静态服务器：
 
-python -m http.server 8080 --directory dist
+```bash
+python -m http.server 8080
+```
 
-然后访问 http://localhost:8080。
+然后访问 <http://localhost:8080/dist/>。
+
+不建议直接双击 `dist/index.html`。浏览器通常会限制 `file://` 页面读取 `recipes.json`，这时只能看到少量内置兜底菜谱。
+
+静态服务器不会运行 `/api/restaurants`，所以附近餐厅查询需要部署后端函数后才能使用。
+
+## 部署到 Vercel
+
+1. 在 Vercel 导入此 GitHub 仓库，Framework Preset 选择 `Other`，Build Command 留空，Output Directory 留空。
+2. 在项目 `Settings → Environment Variables` 中添加 `AMAP_WEB_KEY`，值填自己的高德 Web 服务 Key。不要把 Key 写进源码或提交到 GitHub。
+3. 选择 Production、Preview 等需要的环境后重新部署。
+4. 部署后可访问 `/api/restaurants?address=上海静安寺&range=3` 检查接口是否能返回餐厅；未配置 Key 时会返回 `AMAP_NOT_CONFIGURED`。
+
+Vercel 可作为快速公开体验和作品集预览，但不保证中国大陆网络的稳定访问。若大陆可访问是硬性要求，建议后续把正式站点部署到中国大陆云厂商，并完成域名 ICP 备案及相关合规配置；也可以先用 Vercel 作为海外预览版。
 
 ## 技术与数据
 
 - 原生 HTML、CSS 和 JavaScript
-- 用餐偏好、历史记录等保存在浏览器 localStorage 中
+- 用餐偏好、历史记录等保存在浏览器 `localStorage` 中
 - 不需要账号，也没有项目自建的用户数据服务器
-- 不要将高德 Key、服务端密钥或其他凭据提交到公开仓库；真实 API 接入时应通过后端和环境变量管理密钥
+- 不要将高德 Key、服务端密钥或其他凭据提交到公开仓库；通过后端函数和部署平台环境变量管理密钥
 
 ## 参与改进
 
@@ -56,4 +75,4 @@ python -m http.server 8080 --directory dist
 
 ## License
 
-本项目基于 MIT License 开源，详见 LICENSE 文件。
+本项目基于 [MIT License](LICENSE) 开源。
