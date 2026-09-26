@@ -1,6 +1,8 @@
 const cache = new Map();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 100;
+const PAGE_SIZE = 25;
+const MAX_PAGES_PER_AREA = 2;
 
 function json(res, status, body) {
   res.status(status).setHeader('content-type', 'application/json; charset=utf-8');
@@ -79,24 +81,43 @@ function normalizePoi(poi, center) {
 }
 
 async function searchArea(area, key, keywords) {
-  const params = new URLSearchParams({
-    key,
-    location: `${area.center.lng.toFixed(6)},${area.center.lat.toFixed(6)}`,
-    radius: String(area.radius),
-    sortrule: 'distance',
-    offset: '25',
-    page: '1',
-    extensions: 'all',
-  });
-  // Prefer an actual keyword search for dietary themes. Combining the broad
-  // restaurant type with keywords fills the first page with unrelated POIs.
-  if (keywords) params.set('keywords', keywords);
-  else params.set('types', '050000');
-  const response = await fetch(`https://restapi.amap.com/v3/place/around?${params}`);
-  if (!response.ok) throw new Error(`AMap HTTP ${response.status}`);
-  const data = await response.json();
-  if (data.status !== '1') throw new Error(`AMap ${data.info || 'query failed'}`);
-  return data.pois || [];
+  const pois = [];
+  let pagesAttempted = 0;
+  let pageFailed = false;
+  let truncated = false;
+  for (let page = 1; page <= MAX_PAGES_PER_AREA; page++) {
+    const params = new URLSearchParams({
+      key,
+      location: `${area.center.lng.toFixed(6)},${area.center.lat.toFixed(6)}`,
+      radius: String(area.radius),
+      sortrule: 'distance',
+      offset: String(PAGE_SIZE),
+      page: String(page),
+      extensions: 'all',
+    });
+    // Dietary keywords are queried separately from the broad restaurant type.
+    if (keywords) params.set('keywords', keywords);
+    else params.set('types', '050000');
+    pagesAttempted++;
+    try {
+      const response = await fetch(`https://restapi.amap.com/v3/place/around?${params}`);
+      if (!response.ok) throw new Error(`AMap HTTP ${response.status}`);
+      const data = await response.json();
+      if (data.status !== '1') throw new Error(`AMap ${data.info || 'query failed'}`);
+      const pagePois = Array.isArray(data.pois) ? data.pois : [];
+      pois.push(...pagePois);
+      const total = Number(data.count);
+      const hasMore = pagePois.length === PAGE_SIZE && (!Number.isFinite(total) || total > page * PAGE_SIZE);
+      if (!hasMore) break;
+      if (page === MAX_PAGES_PER_AREA) truncated = true;
+    } catch (error) {
+      if (page === 1) throw error;
+      console.warn('amap extra page unavailable', error);
+      pageFailed = true;
+      break;
+    }
+  }
+  return { pois, pagesAttempted, pageFailed, truncated };
 }
 
 export default async function handler(req, res) {
@@ -165,7 +186,8 @@ export default async function handler(req, res) {
       console.error('amap nearby search failed', results.map(result => result.reason?.message));
       return json(res, 502, { ok: false, code: 'AMAP_ERROR', message: '高德餐厅查询失败，请稍后再试' });
     }
-    const restaurants = [...new Map(successes.flatMap(result => result.value)
+    const partial = successes.length < queries.length || successes.some(result => result.value.pageFailed);
+    const restaurants = [...new Map(successes.flatMap(result => result.value.pois)
       .map(poi => normalizePoi(poi, origin))
       .filter(poi => poi && poi.id && poi.distance <= radius && (!theme || poi.type.includes('餐饮服务')))
       .map(poi => [poi.id, poi])).values()];
@@ -174,11 +196,22 @@ export default async function handler(req, res) {
       ok: true,
       source: 'amap',
       center: origin,
-      partial: successes.length < queries.length,
+      partial,
+      truncated: successes.some(result => result.value.truncated),
+      diagnostics: {
+        areasRequested: queries.length,
+        areasSucceeded: successes.length,
+        pagesAttempted: successes.reduce((sum, result) => sum + result.value.pagesAttempted, 0) + queries.length - successes.length,
+        poisReturned: successes.reduce((sum, result) => sum + result.value.pois.length, 0),
+        restaurantsAfterDedup: restaurants.length,
+      },
       restaurants,
     };
-    if (cache.size >= MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
-    cache.set(cacheKey, { createdAt: Date.now(), body });
+    // A transient area or page failure must not poison the next five minutes.
+    if (!partial) {
+      if (cache.size >= MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
+      cache.set(cacheKey, { createdAt: Date.now(), body });
+    }
     return json(res, 200, body);
   } catch (error) {
     console.error('amap restaurant search failed', error);
