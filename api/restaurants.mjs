@@ -43,6 +43,7 @@ function normalizePoi(poi) {
     cost: Number.isFinite(cost) ? cost : null,
     location: Number.isFinite(lng) && Number.isFinite(lat) ? { lng, lat } : null,
     tel: poi.tel || '',
+    page: Number(poi.__page || 1),
   };
 }
 
@@ -92,31 +93,33 @@ export default async function handler(req, res) {
   }
 
   try {
-    const params = new URLSearchParams({
-      key,
-      location: `${lng},${lat}`,
-      types: '050000',
-      radius: String(radius),
-      sortrule: 'distance',
-      offset: '25',
-      page: '1',
-      extensions: 'all',
-    });
-    const response = await fetch(`https://restapi.amap.com/v3/place/around?${params}`);
-    if (!response.ok) {
-      return json(res, 502, { ok: false, code: 'AMAP_ERROR', message: '高德查询暂时失败' });
-    }
-    const data = await response.json();
-    if (data.status !== '1') {
-      console.error('amap nearby search failed', data.info || 'unknown error');
-      return json(res, 502, { ok: false, code: 'AMAP_ERROR', message: '高德查询暂时失败，请稍后再试' });
-    }
+    // 高德单页最多返回25家，密集商圈里第一页可能全部集中在几十米内。
+    // 扩大范围时分页拉取，避免“10km内”实际上只随机了最近25家。
+    const pageCount = radius <= 1000 ? 1 : radius <= 3000 ? 3 : radius <= 5000 ? 5 : 10;
+    const pages = await Promise.all(Array.from({ length: pageCount }, async (_, index) => {
+      const params = new URLSearchParams({
+        key,
+        location: `${lng},${lat}`,
+        types: '050000',
+        radius: String(radius),
+        sortrule: 'distance',
+        offset: '25',
+        page: String(index + 1),
+        extensions: 'all',
+      });
+      const response = await fetch(`https://restapi.amap.com/v3/place/around?${params}`);
+      if (!response.ok) throw new Error(`AMap HTTP ${response.status}`);
+      const data = await response.json();
+      if (data.status !== '1') throw new Error(`AMap ${data.info || 'query failed'}`);
+      return (data.pois || []).map(poi => ({ ...poi, __page: index + 1 }));
+    }));
+    const pois = [...new Map(pages.flat().map(poi => [poi.id, poi])).values()];
 
     const body = {
       ok: true,
       source: 'amap',
       center: { lng, lat },
-      restaurants: (data.pois || []).map(normalizePoi),
+      restaurants: pois.map(normalizePoi),
     };
     if (cache.size >= MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
     cache.set(cacheKey, { createdAt: Date.now(), body });
