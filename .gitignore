@@ -1,0 +1,18 @@
+# Local build/deployment artifacts
+work/
+.openai/
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Common editor/system files
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Dependencies and generated output not intentionally tracked
+node_modules/
+*.log
