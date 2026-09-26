@@ -29,8 +29,37 @@ async function geocode(address, key) {
   return Number.isFinite(lng) && Number.isFinite(lat) ? { lng, lat } : null;
 }
 
-function normalizePoi(poi) {
+function distanceInMeters(a, b) {
+  const toRad = value => value * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return Math.round(2 * 6371000 * Math.asin(Math.min(1, Math.sqrt(h))));
+}
+
+function offsetPoint(center, meters, bearing) {
+  const angle = bearing * Math.PI / 180;
+  return {
+    lng: center.lng + meters * Math.sin(angle) / (111320 * Math.max(0.01, Math.cos(center.lat * Math.PI / 180))),
+    lat: center.lat + meters * Math.cos(angle) / 111320,
+  };
+}
+
+function searchAreas(center, radius) {
+  if (radius <= 1000) return [{ center, radius }];
+  const outerRadius = Math.min(Math.round(radius * 0.3), 2500);
+  return [
+    { center, radius },
+    ...[0, 120, 240].map(bearing => ({
+      center: offsetPoint(center, radius * 0.7, bearing),
+      radius: outerRadius,
+    })),
+  ];
+}
+
+function normalizePoi(poi, center) {
   const [lng, lat] = String(poi.location || '').split(',').map(Number);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
   const costValue = poi.biz_ext?.cost;
   const cost = costValue == null || costValue === '' ? null : Number(costValue);
   return {
@@ -39,12 +68,29 @@ function normalizePoi(poi) {
     address: poi.address || '',
     category: poi.type?.split(';').pop() || '餐厅',
     type: poi.type || '餐饮服务',
-    distance: Number(poi.distance || 0),
+    distance: distanceInMeters(center, { lng, lat }),
     cost: Number.isFinite(cost) ? cost : null,
-    location: Number.isFinite(lng) && Number.isFinite(lat) ? { lng, lat } : null,
+    location: { lng, lat },
     tel: poi.tel || '',
-    page: Number(poi.__page || 1),
   };
+}
+
+async function searchArea(area, key) {
+  const params = new URLSearchParams({
+    key,
+    location: `${area.center.lng.toFixed(6)},${area.center.lat.toFixed(6)}`,
+    types: '050000',
+    radius: String(area.radius),
+    sortrule: 'distance',
+    offset: '25',
+    page: '1',
+    extensions: 'all',
+  });
+  const response = await fetch(`https://restapi.amap.com/v3/place/around?${params}`);
+  if (!response.ok) throw new Error(`AMap HTTP ${response.status}`);
+  const data = await response.json();
+  if (data.status !== '1') throw new Error(`AMap ${data.info || 'query failed'}`);
+  return data.pois || [];
 }
 
 export default async function handler(req, res) {
@@ -93,33 +139,29 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 高德单页最多返回25家，密集商圈里第一页可能全部集中在几十米内。
-    // 扩大范围时分页拉取，避免“10km内”实际上只随机了最近25家。
-    const pageCount = radius <= 1000 ? 1 : radius <= 3000 ? 3 : radius <= 5000 ? 5 : 10;
-    const pages = await Promise.all(Array.from({ length: pageCount }, async (_, index) => {
-      const params = new URLSearchParams({
-        key,
-        location: `${lng},${lat}`,
-        types: '050000',
-        radius: String(radius),
-        sortrule: 'distance',
-        offset: '25',
-        page: String(index + 1),
-        extensions: 'all',
-      });
-      const response = await fetch(`https://restapi.amap.com/v3/place/around?${params}`);
-      if (!response.ok) throw new Error(`AMap HTTP ${response.status}`);
-      const data = await response.json();
-      if (data.status !== '1') throw new Error(`AMap ${data.info || 'query failed'}`);
-      return (data.pois || []).map(poi => ({ ...poi, __page: index + 1 }));
-    }));
-    const pois = [...new Map(pages.flat().map(poi => [poi.id, poi])).values()];
+    const origin = { lng, lat };
+    const areas = searchAreas(origin, radius);
+    const results = [];
+    // 每次最多并发两个请求；一片区域失败时仍可使用其他区域的结果。
+    for (let index = 0; index < areas.length; index += 2) {
+      results.push(...await Promise.allSettled(areas.slice(index, index + 2).map(area => searchArea(area, key))));
+    }
+    const successes = results.filter(result => result.status === 'fulfilled');
+    if (!successes.length) {
+      console.error('amap nearby search failed', results.map(result => result.reason?.message));
+      return json(res, 502, { ok: false, code: 'AMAP_ERROR', message: '高德餐厅查询失败，请稍后再试' });
+    }
+    const restaurants = [...new Map(successes.flatMap(result => result.value)
+      .map(poi => normalizePoi(poi, origin))
+      .filter(poi => poi && poi.id && poi.distance <= radius)
+      .map(poi => [poi.id, poi])).values()];
 
     const body = {
       ok: true,
       source: 'amap',
-      center: { lng, lat },
-      restaurants: pois.map(normalizePoi),
+      center: origin,
+      partial: successes.length < areas.length,
+      restaurants,
     };
     if (cache.size >= MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
     cache.set(cacheKey, { createdAt: Date.now(), body });
