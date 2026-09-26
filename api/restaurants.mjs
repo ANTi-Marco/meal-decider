@@ -79,14 +79,16 @@ async function searchArea(area, key, keywords) {
   const params = new URLSearchParams({
     key,
     location: `${area.center.lng.toFixed(6)},${area.center.lat.toFixed(6)}`,
-    types: '050000',
     radius: String(area.radius),
     sortrule: 'distance',
     offset: '25',
     page: '1',
     extensions: 'all',
   });
+  // Prefer an actual keyword search for dietary themes. Combining the broad
+  // restaurant type with keywords fills the first page with unrelated POIs.
   if (keywords) params.set('keywords', keywords);
+  else params.set('types', '050000');
   const response = await fetch(`https://restapi.amap.com/v3/place/around?${params}`);
   if (!response.ok) throw new Error(`AMap HTTP ${response.status}`);
   const data = await response.json();
@@ -156,7 +158,7 @@ export default async function handler(req, res) {
     }
     const restaurants = [...new Map(successes.flatMap(result => result.value)
       .map(poi => normalizePoi(poi, origin))
-      .filter(poi => poi && poi.id && poi.distance <= radius)
+      .filter(poi => poi && poi.id && poi.distance <= radius && (!theme || poi.type.includes('餐饮服务')))
       .map(poi => [poi.id, poi])).values()];
 
     const body = {
