@@ -115,8 +115,10 @@ export default async function handler(req, res) {
   if (!radius) {
     return json(res, 400, { ok: false, code: 'INVALID_RANGE', message: '距离范围无效' });
   }
-  const theme = req.query.theme === 'light' ? 'light' : '';
-  const keywords = theme === 'light' ? '轻食|沙拉|健康餐|低脂|减脂|素食|蔬食|健身餐|鸡胸肉' : '';
+  const theme = ['light', 'protein'].includes(req.query.theme) ? req.query.theme : '';
+  const keywords = theme === 'light'
+    ? '轻食|沙拉|健康餐|低脂|减脂|素食|蔬食|健身餐|鸡胸肉'
+    : theme === 'protein' ? '牛肉|鸡肉|鸡蛋|鱼|虾|海鲜|豆腐|牛排' : '';
 
   let lng = Number(req.query.lng);
   let lat = Number(req.query.lat);
@@ -149,10 +151,14 @@ export default async function handler(req, res) {
   try {
     const origin = { lng, lat };
     const areas = searchAreas(origin, radius);
+    const queries = areas.map(area => ({ area, keywords }));
+    // Keep one broad page for clearly labelled alternatives when a targeted
+    // protein search has too few restaurants at the chosen budget.
+    if (theme === 'protein') queries.push({ area: { center: origin, radius: Math.min(radius, 5000) }, keywords: '' });
     const results = [];
     // 每次最多并发两个请求；一片区域失败时仍可使用其他区域的结果。
-    for (let index = 0; index < areas.length; index += 2) {
-      results.push(...await Promise.allSettled(areas.slice(index, index + 2).map(area => searchArea(area, key, keywords))));
+    for (let index = 0; index < queries.length; index += 2) {
+      results.push(...await Promise.allSettled(queries.slice(index, index + 2).map(query => searchArea(query.area, key, query.keywords))));
     }
     const successes = results.filter(result => result.status === 'fulfilled');
     if (!successes.length) {
@@ -168,7 +174,7 @@ export default async function handler(req, res) {
       ok: true,
       source: 'amap',
       center: origin,
-      partial: successes.length < areas.length,
+      partial: successes.length < queries.length,
       restaurants,
     };
     if (cache.size >= MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
