@@ -75,7 +75,7 @@ function normalizePoi(poi, center) {
   };
 }
 
-async function searchArea(area, key) {
+async function searchArea(area, key, keywords) {
   const params = new URLSearchParams({
     key,
     location: `${area.center.lng.toFixed(6)},${area.center.lat.toFixed(6)}`,
@@ -86,6 +86,7 @@ async function searchArea(area, key) {
     page: '1',
     extensions: 'all',
   });
+  if (keywords) params.set('keywords', keywords);
   const response = await fetch(`https://restapi.amap.com/v3/place/around?${params}`);
   if (!response.ok) throw new Error(`AMap HTTP ${response.status}`);
   const data = await response.json();
@@ -109,6 +110,8 @@ export default async function handler(req, res) {
   if (!radius) {
     return json(res, 400, { ok: false, code: 'INVALID_RANGE', message: '距离范围无效' });
   }
+  const theme = req.query.theme === 'light' ? 'light' : '';
+  const keywords = theme === 'light' ? '轻食|沙拉|健康餐|低脂|减脂|素食|蔬食|健身餐|鸡胸肉' : '';
 
   let lng = Number(req.query.lng);
   let lat = Number(req.query.lat);
@@ -132,7 +135,7 @@ export default async function handler(req, res) {
     return json(res, 400, { ok: false, code: 'LOCATION_REQUIRED', message: '请开启定位或输入城市、商圈或地点' });
   }
 
-  const cacheKey = `${lng.toFixed(4)},${lat.toFixed(4)}:${radius}`;
+  const cacheKey = `${lng.toFixed(4)},${lat.toFixed(4)}:${radius}:${theme}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.createdAt < CACHE_TTL_MS) {
     return json(res, 200, { ...cached.body, cached: true });
@@ -144,7 +147,7 @@ export default async function handler(req, res) {
     const results = [];
     // 每次最多并发两个请求；一片区域失败时仍可使用其他区域的结果。
     for (let index = 0; index < areas.length; index += 2) {
-      results.push(...await Promise.allSettled(areas.slice(index, index + 2).map(area => searchArea(area, key))));
+      results.push(...await Promise.allSettled(areas.slice(index, index + 2).map(area => searchArea(area, key, keywords))));
     }
     const successes = results.filter(result => result.status === 'fulfilled');
     if (!successes.length) {
