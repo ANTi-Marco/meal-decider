@@ -50,6 +50,9 @@ function searchAreas(center, radius) {
   const outerRadius = Math.min(Math.round(radius * 0.3), 2500);
   return [
     { center, radius },
+    // A larger AMap search has a different first page; include the inner area
+    // explicitly so 10km does not lose restaurants found by the 5km search.
+    ...(radius > 5000 ? [{ center, radius: 5000 }] : []),
     ...[0, 120, 240].map(bearing => ({
       center: offsetPoint(center, radius * 0.7, bearing),
       radius: outerRadius,
