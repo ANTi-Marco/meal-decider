@@ -97,7 +97,7 @@ async function deepseek(messages, tools, key, signal, forceFinal = false) {
       messages, tools, tool_choice: forceFinal ? 'none' : 'auto' }),
     signal,
   });
-  if (!response.ok) throw new Error(`DeepSeek HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`DEEPSEEK_HTTP_${response.status}`);
   const data = await response.json();
   const message = data.choices?.[0]?.message;
   if (!message) throw new Error('DeepSeek response empty');
@@ -190,7 +190,7 @@ export default async function handler(req, res) {
   catch (error) { return reply(res, 400, { ok: false, code: 'INVALID_INPUT', message: error.message }); }
   const amapKey = process.env.AMAP_WEB_KEY;
   const aiKey = process.env.DEEPSEEK_API_KEY;
-  if (!amapKey || !aiKey) return reply(res, 503, { ok: false, code: 'AI_NOT_CONFIGURED', message: 'AI 推荐暂未配置' });
+  if (!amapKey || !aiKey) return reply(res, 503, { ok: false, code: 'AI_NOT_CONFIGURED', message: 'Vercel Production 尚未配置 DEEPSEEK_API_KEY，请保存变量并重新部署' });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25000);
   try {
@@ -199,8 +199,29 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error('AI restaurant recommendation failed', error);
     const locationFailed = error.message === 'LOCATION_NOT_FOUND';
-    return reply(res, locationFailed ? 400 : 502, { ok: false,
-      code: locationFailed ? 'LOCATION_NOT_FOUND' : 'AI_UNAVAILABLE',
-      message: locationFailed ? '找不到这个地点，请换个具体地址' : 'AI 推荐暂时不可用，正在尝试常规搜索' });
+    const statusMatch = error.message.match(/^DEEPSEEK_HTTP_(\d{3})$/);
+    const providerStatus = statusMatch ? Number(statusMatch[1]) : null;
+    const errorCode = locationFailed ? 'LOCATION_NOT_FOUND'
+      : providerStatus === 401 ? 'DEEPSEEK_KEY_INVALID'
+      : providerStatus === 402 ? 'DEEPSEEK_BALANCE_LOW'
+      : providerStatus === 429 ? 'DEEPSEEK_RATE_LIMIT'
+      : providerStatus === 400 ? 'DEEPSEEK_REQUEST_INVALID'
+      : providerStatus === 404 ? 'DEEPSEEK_MODEL_UNAVAILABLE'
+      : error.name === 'AbortError' ? 'AI_TIMEOUT'
+      : error.message === 'AMAP_SEARCH_FAILED' ? 'AMAP_SEARCH_FAILED'
+      : 'AI_UNAVAILABLE';
+    const messages = {
+      LOCATION_NOT_FOUND: '找不到这个地点，请换个具体地址',
+      DEEPSEEK_KEY_INVALID: 'DeepSeek Key 无效或未开通 API，请检查 Vercel 环境变量',
+      DEEPSEEK_BALANCE_LOW: 'DeepSeek API 账户余额不足，请到开放平台查看',
+      DEEPSEEK_RATE_LIMIT: 'DeepSeek API 暂时限流，请稍后重试',
+      DEEPSEEK_REQUEST_INVALID: 'DeepSeek API 拒绝了请求，请检查 API 配置',
+      DEEPSEEK_MODEL_UNAVAILABLE: 'DeepSeek 当前模型不可用，请联系维护者检查配置',
+      AI_TIMEOUT: 'AI 搜索超时，已尝试使用常规搜索',
+      AMAP_SEARCH_FAILED: '高德搜索暂时失败，已尝试使用常规搜索',
+      AI_UNAVAILABLE: 'AI 服务暂时不可用，已尝试使用常规搜索',
+    };
+    return reply(res, locationFailed ? 400 : 502, { ok: false, code: errorCode,
+      message: messages[errorCode] || messages.AI_UNAVAILABLE });
   } finally { clearTimeout(timer); }
 }
