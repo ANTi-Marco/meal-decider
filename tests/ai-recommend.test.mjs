@@ -76,6 +76,7 @@ test('AI changes search terms and receives real POI candidates', async () => {
   assert.equal(calls.convert, 1);
   assert.equal(calls.ai[0].messages[1].content.includes('121.445839'), false);
   assert.ok(calls.ai.every(body => body.thinking?.type === 'disabled'));
+  assert.deepEqual(calls.ai.at(-1).response_format, { type: 'json_object' });
 });
 
 test('final DeepSeek choice request requires valid JSON output', async () => {
