@@ -20,9 +20,9 @@ function radiusFor(value) {
   }
 }
 
-async function geocode(address, key) {
+async function geocode(address, key, signal) {
   const params = new URLSearchParams({ key, address });
-  const response = await fetch(`https://restapi.amap.com/v3/geocode/geo?${params}`);
+  const response = await fetch(`https://restapi.amap.com/v3/geocode/geo?${params}`, { signal });
   if (!response.ok) return null;
   const data = await response.json();
   const location = data.geocodes?.[0]?.location;
@@ -30,6 +30,20 @@ async function geocode(address, key) {
   const [lng, lat] = location.split(',').map(Number);
   return Number.isFinite(lng) && Number.isFinite(lat) ? { lng, lat } : null;
 }
+
+export async function convertGps(lng, lat, key, signal) {
+  const params = new URLSearchParams({ key, locations: `${lng},${lat}`, coordsys: 'gps' });
+  const response = await fetch(`https://restapi.amap.com/v3/assistant/coordinate/convert?${params}`, { signal });
+  if (!response.ok) throw new Error(`AMap coordinate conversion HTTP ${response.status}`);
+  const data = await response.json();
+  const [convertedLng, convertedLat] = String(data.locations || '').split(',').map(Number);
+  if (data.status !== '1' || !Number.isFinite(convertedLng) || !Number.isFinite(convertedLat)) {
+    throw new Error(`AMap coordinate conversion failed: ${data.info || 'invalid response'}`);
+  }
+  return { lng: convertedLng, lat: convertedLat };
+}
+
+export { geocode, distanceInMeters, offsetPoint, normalizePoi, radiusFor };
 
 function distanceInMeters(a, b) {
   const toRad = value => value * Math.PI / 180;
@@ -66,7 +80,7 @@ function normalizePoi(poi, center) {
   const [lng, lat] = String(poi.location || '').split(',').map(Number);
   if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
   const costValue = poi.biz_ext?.cost;
-  const cost = costValue == null || costValue === '' ? null : Number(costValue);
+  const cost = costValue == null || costValue === '' || Array.isArray(costValue) ? null : Number(costValue);
   return {
     id: poi.id,
     name: poi.name,
@@ -161,6 +175,15 @@ export default async function handler(req, res) {
 
   if (!Number.isFinite(lng) || !Number.isFinite(lat) || Math.abs(lng) > 180 || Math.abs(lat) > 90) {
     return json(res, 400, { ok: false, code: 'LOCATION_REQUIRED', message: '请开启定位或输入城市、商圈或地点' });
+  }
+
+  if (hasCoords && req.query.coordSys === 'gps') {
+    try {
+      ({ lng, lat } = await convertGps(lng, lat, key));
+    } catch (error) {
+      console.error('amap coordinate conversion failed', error);
+      return json(res, 502, { ok: false, code: 'LOCATION_CONVERSION_FAILED', message: '定位坐标转换失败，请稍后重试或手动输入地点' });
+    }
   }
 
   const cacheKey = `${lng.toFixed(4)},${lat.toFixed(4)}:${radius}:${theme}`;
