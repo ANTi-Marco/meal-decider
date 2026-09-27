@@ -76,8 +76,17 @@ test('AI changes search terms and receives real POI candidates', async () => {
   assert.equal(calls.convert, 1);
   assert.equal(calls.ai[0].messages[1].content.includes('121.445839'), false);
   assert.ok(calls.ai.every(body => body.thinking?.type === 'disabled'));
-  assert.deepEqual(calls.ai.at(-1).response_format, { type: 'json_object' });
+});
+
+test('final DeepSeek choice request requires valid JSON output', async () => {
+  const calls = mockApi({ rounds: [['a', 'b', 'c']], pois: [poi('real-1', 121.45, 31.224)],
+    choices: [{ id: 'real-1', reasonCode: 'taste' }] });
+  const res = response();
+  await handler(request({ range: '1' }), res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(calls.ai.length, 4);
   assert.equal(calls.ai[0].response_format, undefined);
+  assert.deepEqual(calls.ai[3].response_format, { type: 'json_object' });
 });
 
 test('at most three rounds and twelve AMap calls, even if AI wants more', async () => {
