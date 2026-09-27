@@ -93,7 +93,7 @@ async function deepseek(messages, tools, key, signal, forceFinal = false) {
   const response = await fetch(DEEPSEEK_URL, {
     method: 'POST',
     headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'deepseek-flash', temperature: .5, max_tokens: 900,
+    body: JSON.stringify({ model: 'deepseek-flash', thinking: { type: 'disabled' }, temperature: .5, max_tokens: 900,
       messages, tools, tool_choice: forceFinal ? 'none' : 'auto' }),
     signal,
   });
