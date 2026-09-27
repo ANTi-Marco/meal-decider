@@ -94,7 +94,8 @@ async function deepseek(messages, tools, key, signal, forceFinal = false) {
     method: 'POST',
     headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
     body: JSON.stringify({ model: 'deepseek-flash', thinking: { type: 'disabled' }, temperature: .5, max_tokens: 900,
-      messages, tools, tool_choice: forceFinal ? 'none' : 'auto' }),
+      messages, tools, tool_choice: forceFinal ? 'none' : 'auto',
+      response_format: forceFinal ? { type: 'json_object' } : undefined }),
     signal,
   });
   if (!response.ok) {
