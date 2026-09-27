@@ -29,7 +29,7 @@ function poi(id, lng, lat, cost = '45') {
     address: '测试路', biz_ext: cost == null ? {} : { cost } };
 }
 
-function mockApi({ rounds = [['清淡', '轻食', '沙拉']], pois = [], choices = [], convert = '121.445839,31.223167' }) {
+function mockApi({ rounds = [['清淡', '轻食', '沙拉']], pois = [], choices = [], convert = '121.445839,31.223167', deepseekStatus = null }) {
   process.env.AMAP_WEB_KEY = 'test-amap';
   process.env.DEEPSEEK_API_KEY = 'test-deepseek';
   const calls = { amap: [], ai: [], convert: 0 };
@@ -48,6 +48,7 @@ function mockApi({ rounds = [['清淡', '轻食', '沙拉']], pois = [], choices
     if (path.includes('deepseek')) {
       const body = JSON.parse(options.body);
       calls.ai.push(body);
+      if (deepseekStatus) return { ok: false, status: deepseekStatus, json: async () => ({}) };
       const index = calls.ai.length - 1;
       const keyword = body.tool_choice === 'none' ? undefined : rounds[0]?.[index];
       const message = keyword === undefined
@@ -118,4 +119,13 @@ test('missing DeepSeek key returns a recoverable status for frontend fallback', 
   await handler(request(), res);
   assert.equal(res.statusCode, 503);
   assert.equal(res.body.code, 'AI_NOT_CONFIGURED');
+});
+
+test('DeepSeek authentication failures return a safe actionable error code', async () => {
+  mockApi({ deepseekStatus: 401 });
+  const res = response();
+  await handler(request(), res);
+  assert.equal(res.statusCode, 502);
+  assert.equal(res.body.code, 'DEEPSEEK_KEY_INVALID');
+  assert.doesNotMatch(res.body.message, /test-deepseek|Bearer/);
 });
