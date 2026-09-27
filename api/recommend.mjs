@@ -97,7 +97,16 @@ async function deepseek(messages, tools, key, signal, forceFinal = false) {
       messages, tools, tool_choice: forceFinal ? 'none' : 'auto' }),
     signal,
   });
-  if (!response.ok) throw new Error(`DEEPSEEK_HTTP_${response.status}`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const providerMessage = String(payload?.error?.message || payload?.message || '')
+      .replace(/Bearer\s+\S+/gi, 'Bearer [hidden]')
+      .replace(/sk-[A-Za-z0-9_-]+/g, '[hidden]')
+      .slice(0, 180);
+    const error = new Error(`DEEPSEEK_HTTP_${response.status}`);
+    error.providerMessage = providerMessage;
+    throw error;
+  }
   const data = await response.json();
   const message = data.choices?.[0]?.message;
   if (!message) throw new Error('DeepSeek response empty');
@@ -209,6 +218,8 @@ export default async function handler(req, res) {
       : providerStatus === 404 ? 'DEEPSEEK_MODEL_UNAVAILABLE'
       : error.name === 'AbortError' ? 'AI_TIMEOUT'
       : error.message === 'AMAP_SEARCH_FAILED' ? 'AMAP_SEARCH_FAILED'
+      : error.message === 'AI_INVALID_OUTPUT' ? 'AI_INVALID_OUTPUT'
+      : error.message === 'AI_NO_VALID_CHOICES' ? 'AI_NO_VALID_CHOICES'
       : 'AI_UNAVAILABLE';
     const messages = {
       LOCATION_NOT_FOUND: '找不到这个地点，请换个具体地址',
@@ -219,9 +230,11 @@ export default async function handler(req, res) {
       DEEPSEEK_MODEL_UNAVAILABLE: 'DeepSeek 当前模型不可用，请联系维护者检查配置',
       AI_TIMEOUT: 'AI 搜索超时，已尝试使用常规搜索',
       AMAP_SEARCH_FAILED: '高德搜索暂时失败，已尝试使用常规搜索',
+      AI_INVALID_OUTPUT: 'AI 返回格式异常，已尝试使用常规搜索',
+      AI_NO_VALID_CHOICES: 'AI 没有从真实搜索结果中选出有效餐厅，已尝试使用常规搜索',
       AI_UNAVAILABLE: 'AI 服务暂时不可用，已尝试使用常规搜索',
     };
-    return reply(res, locationFailed ? 400 : 502, { ok: false, code: errorCode,
-      message: messages[errorCode] || messages.AI_UNAVAILABLE });
+    const message = `${messages[errorCode] || messages.AI_UNAVAILABLE}${error.providerMessage ? `（${error.providerMessage}）` : ''}`;
+    return reply(res, locationFailed ? 400 : 502, { ok: false, code: errorCode, message });
   } finally { clearTimeout(timer); }
 }
