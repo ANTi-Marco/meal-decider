@@ -57,3 +57,16 @@ test('two diners increase the weight of group-friendly restaurants', () => {
   assert.equal(weight({ people: '1' }, item), 1);
   assert.ok(weight({ people: '2' }, item) > weight({ people: '1' }, item));
 });
+
+test('AMap link keeps its original new-tab behavior', () => {
+  const start = html.indexOf('function placeLinks(');
+  const end = html.indexOf('function recipeLinks(', start);
+  assert.ok(start > 0 && end > start);
+  assert.match(html.slice(start, end), /target="_blank"/);
+});
+
+test('product feedback entry is separate from local meal history', () => {
+  assert.match(html, /id="openProductFeedback"/);
+  assert.match(html, /fetch\('\/api\/feedback'/);
+  assert.match(html, /id="saveFeedback"/);
+});

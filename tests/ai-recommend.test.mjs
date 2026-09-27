@@ -29,10 +29,14 @@ function poi(id, lng, lat, cost = '45') {
     address: '测试路', biz_ext: cost == null ? {} : { cost } };
 }
 
-function mockApi({ rounds = [['清淡', '轻食', '沙拉']], pois = [], choices = [], convert = '121.445839,31.223167', deepseekStatus = null }) {
+let keySequence = 0;
+function mockApi({ keywords = ['清淡', '轻食'], pois = [], choices = [], convert = '121.445839,31.223167', deepseekStatus = null, selectionStatus = null, delayedAmap = false }) {
   process.env.AMAP_WEB_KEY = 'test-amap';
   process.env.DEEPSEEK_API_KEY = 'test-deepseek';
-  const calls = { amap: [], ai: [], convert: 0 };
+  process.env.AMAP_WEB_KEY = `test-amap-${++keySequence}`;
+  const calls = { amap: [], ai: [], convert: 0, parallel: false };
+  let activeAmap = 0;
+  let maxActiveAmap = 0;
   globalThis.fetch = async (url, options = {}) => {
     const path = String(url);
     if (path.includes('/coordinate/convert')) {
@@ -43,19 +47,20 @@ function mockApi({ rounds = [['清淡', '轻食', '沙拉']], pois = [], choices
       const params = new URL(path).searchParams;
       calls.amap.push(params);
       const keyword = params.get('keywords') || '';
+      activeAmap++;
+      maxActiveAmap = Math.max(maxActiveAmap, activeAmap);
+      if (delayedAmap) await new Promise(resolve => setTimeout(resolve, 8));
+      activeAmap--;
+      calls.parallel = maxActiveAmap > 1;
       return { ok: true, json: async () => ({ status: '1', pois: typeof pois === 'function' ? pois(keyword, calls.amap.length) : pois }) };
     }
     if (path.includes('deepseek')) {
       const body = JSON.parse(options.body);
       calls.ai.push(body);
-      if (deepseekStatus) return { ok: false, status: deepseekStatus, json: async () => ({}) };
-      const index = calls.ai.length - 1;
-      const keyword = body.tool_choice === 'none' ? undefined : rounds[0]?.[index];
-      const message = keyword === undefined
-        ? { content: JSON.stringify({ choices }) }
-        : { content: null, tool_calls: [{ id: `call-${index}`, type: 'function', function: {
-          name: 'searchRestaurants', arguments: JSON.stringify({ keyword }),
-        } }] };
+      if (deepseekStatus || (selectionStatus && calls.ai.length % 2 === 0)) return { ok: false, status: deepseekStatus || selectionStatus, json: async () => ({}) };
+      const message = calls.ai.length % 2 === 1
+        ? { content: JSON.stringify({ keywords }) }
+        : { content: JSON.stringify({ choices }) };
       return { ok: true, json: async () => ({ choices: [{ message }] }) };
     }
     throw new Error(`Unexpected URL ${path}`);
@@ -63,44 +68,74 @@ function mockApi({ rounds = [['清淡', '轻食', '沙拉']], pois = [], choices
   return calls;
 }
 
-test('AI changes search terms and receives real POI candidates', async () => {
-  const calls = mockApi({ rounds: [['清淡', '轻食']],
-    pois: keyword => keyword === '轻食' ? [poi('real-1', 121.45, 31.224)] : [],
+test('AI plans two keywords once, AMap searches them in parallel, and AI selects real POIs', async () => {
+  const calls = mockApi({ keywords: ['轻食', '沙拉'], delayedAmap: true,
+    pois: keyword => keyword.includes('轻食') ? [poi('real-1', 121.45, 31.224)] : [],
     choices: [{ id: 'real-1', reasonCode: 'taste' }] });
   const res = response();
   await handler(request(), res);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.body.restaurants.map(item => item.id), ['real-1']);
-  assert.equal(res.body.diagnostics.searchRounds, 2);
+  assert.equal(res.body.diagnostics.searchRounds, 1);
+  assert.equal(res.body.diagnostics.aiCalls, 2);
   assert.equal(res.body.diagnostics.amapCalls, 9);
+  assert.equal(res.body.diagnostics.searchRequests, 8);
+  assert.equal(calls.parallel, true);
   assert.equal(calls.convert, 1);
   assert.equal(calls.ai[0].messages[1].content.includes('121.445839'), false);
   assert.ok(calls.ai.every(body => body.thinking?.type === 'disabled'));
-  assert.deepEqual(calls.ai.at(-1).response_format, { type: 'json_object' });
+  assert.deepEqual(calls.ai[0].response_format, { type: 'json_object' });
+  assert.equal(calls.ai[1].messages[1].content.includes('real-1'), true);
 });
 
-test('final DeepSeek choice request requires valid JSON output', async () => {
-  const calls = mockApi({ rounds: [['a', 'b', 'c']], pois: [poi('real-1', 121.45, 31.224)],
+test('1km search uses one area per keyword and selector request requires JSON', async () => {
+  const calls = mockApi({ keywords: ['a', 'b'], pois: [poi('real-1', 121.45, 31.224)],
     choices: [{ id: 'real-1', reasonCode: 'taste' }] });
   const res = response();
   await handler(request({ range: '1' }), res);
   assert.equal(res.statusCode, 200);
-  assert.equal(calls.ai.length, 4);
-  assert.equal(calls.ai[0].response_format, undefined);
-  assert.deepEqual(calls.ai[3].response_format, { type: 'json_object' });
+  assert.equal(calls.ai.length, 2);
+  assert.equal(calls.amap.length, 2);
+  assert.deepEqual(calls.ai[1].response_format, { type: 'json_object' });
 });
 
-test('at most three rounds and twelve AMap calls, even if AI wants more', async () => {
-  const calls = mockApi({ rounds: [['a', 'b', 'c', 'd']], pois: [poi('real-1', 121.45, 31.224)],
+test('search count stays under twelve AMap calls including coordinate conversion', async () => {
+  const calls = mockApi({ keywords: ['a', 'b'], pois: [poi('real-1', 121.45, 31.224)],
     choices: [{ id: 'real-1', reasonCode: 'distance' }] });
   const res = response();
   await handler(request(), res);
   assert.equal(res.statusCode, 200);
-  assert.equal(calls.amap.length, 11);
-  assert.equal(calls.amap.length + calls.convert, 12);
-  assert.equal(res.body.diagnostics.searchRounds, 3);
-  assert.equal(calls.ai.at(-1).tool_choice, 'none');
+  assert.equal(calls.amap.length, 8);
+  assert.equal(calls.amap.length + calls.convert, 9);
+  assert.equal(res.body.diagnostics.searchRequests, 8);
+  assert.equal(calls.ai.length, 2);
   assert.ok(calls.amap.every(params => params.get('types') === '050000'));
+});
+
+test('repeated identical searches reuse short-lived POI results but still filter and select anew', async () => {
+  const calls = mockApi({ keywords: ['轻食'], pois: [poi('cached-poi', 121.45, 31.224)],
+    choices: [{ id: 'cached-poi', reasonCode: 'distance' }] });
+  const first = response();
+  const second = response();
+  await handler(request({ range: '1' }), first);
+  await handler(request({ range: '1' }), second);
+  assert.equal(first.body.restaurants[0].id, 'cached-poi');
+  assert.equal(second.body.restaurants[0].id, 'cached-poi');
+  assert.equal(calls.amap.length, 2);
+  assert.equal(second.body.diagnostics.cacheHits, 2);
+  assert.equal(second.body.diagnostics.amapCalls, 1);
+  assert.equal(calls.ai.length, 4);
+});
+
+test('selection timeout uses already fetched candidates instead of requiring another search', async () => {
+  const calls = mockApi({ keywords: ['面馆'], pois: [poi('candidate', 121.45, 31.224)], selectionStatus: 503 });
+  const res = response();
+  await handler(request({ range: '1' }), res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.restaurants.map(item => item.id), ['candidate']);
+  assert.equal(res.body.diagnostics.aiSelectionFallback, true);
+  assert.equal(calls.amap.length, 2);
+  assert.equal(calls.ai.length, 2);
 });
 
 test('backend rejects out-of-range, out-of-budget, repeated and invented POIs', async () => {
@@ -145,11 +180,13 @@ test('missing DeepSeek key returns a recoverable status for frontend fallback', 
   assert.equal(res.body.code, 'AI_NOT_CONFIGURED');
 });
 
-test('DeepSeek authentication failures return a safe actionable error code', async () => {
-  mockApi({ deepseekStatus: 401 });
+test('DeepSeek selection authentication failure falls back to verified AMap candidates', async () => {
+  const calls = mockApi({ keywords: ['轻食'], pois: [poi('verified-fallback', 121.45, 31.224)], selectionStatus: 401 });
   const res = response();
   await handler(request(), res);
-  assert.equal(res.statusCode, 502);
-  assert.equal(res.body.code, 'DEEPSEEK_KEY_INVALID');
-  assert.doesNotMatch(res.body.message, /test-deepseek|Bearer/);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.restaurants.map(item => item.id), ['verified-fallback']);
+  assert.equal(res.body.diagnostics.aiSelectionFallback, true);
+  assert.equal(calls.ai.length, 2);
+  assert.doesNotMatch(JSON.stringify(res.body), /test-deepseek|Bearer/);
 });
