@@ -45,6 +45,12 @@ function withinBudget(poi, budget) {
   return poi.cost >= low && poi.cost <= high;
 }
 
+function compatibleWithNutrition(poi, nutrition) {
+  if (!['light', 'lowcal'].includes(nutrition)) return true;
+  const label = `${poi.name} ${poi.type} ${poi.category}`;
+  return !/(火锅|烧烤|烤肉|炸鸡|炸串|油炸|麻辣香锅|干锅)/.test(label);
+}
+
 function searchAreas(center, radius, round) {
   if (radius <= 1000) return [{ center, radius }];
   const bearings = [0, 120, 240].map(b => b + (round - 1) * 40);
@@ -155,7 +161,7 @@ async function recommend(input, amapKey, aiKey, signal) {
       diagnostics.poisReturned += result.value.length;
       for (const raw of result.value) {
         const poi = normalizePoi(raw, center);
-        if (poi && typeof poi.id === 'string' && poi.type.includes('餐饮服务') &&
+        if (poi && typeof poi.id === 'string' && poi.type.includes('餐饮服务') && compatibleWithNutrition(poi, input.nutrition) &&
           poi.distance <= input.radius && withinBudget(poi, input.budget) && !input.excludePoiIds.has(poi.id)) {
           candidates.set(poi.id, poi);
         }
@@ -181,7 +187,7 @@ async function recommend(input, amapKey, aiKey, signal) {
   for (const choice of parsed.choices) {
     const poi = candidates.get(choice?.id);
     if (!poi || seen.has(poi.id) || poi.distance > input.radius ||
-      !withinBudget(poi, input.budget) || input.excludePoiIds.has(poi.id)) continue;
+      !withinBudget(poi, input.budget) || !compatibleWithNutrition(poi, input.nutrition) || input.excludePoiIds.has(poi.id)) continue;
     seen.add(poi.id);
     restaurants.push({ ...poi, reason: safeReason(choice.reasonCode, poi) });
     if (restaurants.length === 3) break;
