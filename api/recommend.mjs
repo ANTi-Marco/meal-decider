@@ -146,7 +146,12 @@ async function recommend(input, amapKey, aiKey, signal) {
   for (let round = 1; round <= MAX_SEARCH_ROUNDS; round++) {
     const answer = await deepseek(messages, tools, aiKey, signal);
     const call = answer.tool_calls?.find(item => item.function?.name === 'searchRestaurants');
-    if (!call) { finalMessage = answer; break; }
+    if (!call) {
+      // A search turn can end with ordinary prose instead of the required
+      // JSON. Always make a dedicated constrained final-selection request.
+      finalMessage = await deepseek(messages, tools, aiKey, signal, true);
+      break;
+    }
     messages.push({ role: 'assistant', content: answer.content || null, tool_calls: [call] });
     let keyword = '';
     try { keyword = String(JSON.parse(call.function.arguments || '{}').keyword || '').trim().slice(0, 30); } catch { /* empty broad search */ }
