@@ -113,6 +113,17 @@ test('backend rejects out-of-range, out-of-budget, repeated and invented POIs', 
   assert.deepEqual(res.body.restaurants.map(item => item.id), ['good']);
 });
 
+test('light nutrition deterministically excludes hotpot and barbecue from AI picks', async () => {
+  mockApi({ rounds: [['轻食']], pois: [
+    { ...poi('hotpot', 121.45, 31.224), name: '谷田稻香', type: '餐饮服务;火锅店' },
+    { ...poi('salad', 121.451, 31.224), name: '清爽轻食沙拉', type: '餐饮服务;快餐厅' },
+  ], choices: [{ id: 'hotpot', reasonCode: 'taste' }, { id: 'salad', reasonCode: 'nutrition' }] });
+  const res = response();
+  await handler(request({ nutrition: 'light' }), res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.restaurants.map(item => item.id), ['salad']);
+});
+
 test('unknown cost is preserved as null, and fewer than three results are honest', async () => {
   mockApi({ rounds: [['餐厅']], pois: [poi('unknown', 121.45, 31.224, null)],
     choices: [{ id: 'unknown', reasonCode: 'budget' }] });
