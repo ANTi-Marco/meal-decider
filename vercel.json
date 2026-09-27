@@ -1,8 +1,8 @@
 {
+  "functions": {
+    "api/recommend.mjs": { "maxDuration": 30 }
+  },
   "rewrites": [
-    {
-      "source": "/",
-      "destination": "/dist/index.html"
-    }
+    { "source": "/", "destination": "/dist/index.html" }
   ]
 }

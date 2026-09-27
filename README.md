@@ -7,8 +7,9 @@
 ### 挑一家今天想吃的餐厅
 
 - 选择口味、用餐人数、距离范围、人均预算和营养偏好
-- 按条件筛选餐厅，并查看距离、人均价格和餐饮类型
-- 点击「高德查看」跳转到高德地图搜索这家店
+- 配置 DeepSeek 后，AI 会根据条件选择搜索词，最多换词搜索三轮，再从真实高德 POI 中选出最多三家；未配置或超时时自动使用常规高德搜索
+- 距离、人均价格、餐饮类型均来自高德；没有均价的店会明确标注
+- 点击「高德查看」按 POI ID 打开高德中的具体店铺
 - 不满意当前结果时，可以换一组选项
 
 ### 决定自己做什么
@@ -32,6 +33,8 @@
 ## 数据与隐私说明
 
 - 餐厅搜索可通过服务端函数调用高德 Web 服务 API；高德 Key 只保存在部署平台的环境变量中，不放进网页代码
+- AI 搜索使用服务端 DeepSeek API。DeepSeek Key 同样仅放在环境变量里；浏览器定位会先转换为高德坐标，精确经纬度不会传给 AI
+- AI 只能决定搜索词和候选顺序，不能扩大距离或预算。最终结果由后端再次校验 POI ID、距离、预算和最近三天去重
 - 餐厅距离、人均价格等以高德实际返回为准，部分商户可能没有均价数据
 - 自制菜谱库由开源项目 [YunYouJun/cook](https://github.com/YunYouJun/cook) 的 CSV 数据在构建时清洗生成，当前包含约 600 道菜；来源许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 - 菜谱原始数据不提供可靠的精确热量和烹饪时间，因此页面仅展示食材、难度、厨具和粗粒度营养标签，不编造精确数字
@@ -49,16 +52,19 @@ python -m http.server 8080
 
 然后访问 <http://localhost:8080/dist/>。
 
-不建议直接双击 `dist/index.html`。浏览器通常会限制 `file://` 页面读取 `recipes.json`，这时只能看到少量内置兜底菜谱。
+不要直接双击 `dist/index.html`。`file://` 页面无法调用 `/api/restaurants`，也可能读不到 `recipes.json`。页面会明确提示餐厅接口不可用。
 
-静态服务器不会运行 `/api/restaurants`，所以附近餐厅查询需要部署后端函数后才能使用。
+静态服务器不会运行 `/api/recommend` 或 `/api/restaurants`，所以附近餐厅查询需要部署后端函数后才能使用。
 
 ## 部署到 Vercel
 
 1. 在 Vercel 导入此 GitHub 仓库，Framework Preset 选择 `Other`，Build Command 留空，Output Directory 留空。
-2. 在项目 `Settings → Environment Variables` 中添加 `AMAP_WEB_KEY`，值填自己的高德 Web 服务 Key。不要把 Key 写进源码或提交到 GitHub。
+2. 在项目 `Settings → Environment Variables` 中添加 `AMAP_WEB_KEY`（高德 Web 服务 Key）和 `DEEPSEEK_API_KEY`（DeepSeek API Key）。不要把 Key 写进源码或提交到 GitHub。
 3. 选择 Production、Preview 等需要的环境后重新部署。
 4. 部署后可访问 `/api/restaurants?address=上海静安寺&range=3` 检查接口是否能返回餐厅；未配置 Key 时会返回 `AMAP_NOT_CONFIGURED`。
+5. 在网页选完需求后，新接口 `/api/recommend` 会执行 AI 工具搜索。若 `DEEPSEEK_API_KEY` 缺失，它会返回 `AI_NOT_CONFIGURED`，页面自动回退到常规搜索。每次 AI 推荐最多 3 轮、12 次高德周边搜索，但仍会产生 API 调用费用；正式公开前建议查看高德与 DeepSeek 用量。
+
+运行后端模拟测试：`node --test tests/*.test.mjs`。本项目没有把任何个人 Key 放在仓库里。
 
 Vercel 可作为快速公开体验和作品集预览，但不保证中国大陆网络的稳定访问。若大陆可访问是硬性要求，建议后续把正式站点部署到中国大陆云厂商，并完成域名 ICP 备案及相关合规配置；也可以先用 Vercel 作为海外预览版。
 
