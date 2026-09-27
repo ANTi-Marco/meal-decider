@@ -75,6 +75,7 @@ test('AI changes search terms and receives real POI candidates', async () => {
   assert.equal(res.body.diagnostics.amapCalls, 9);
   assert.equal(calls.convert, 1);
   assert.equal(calls.ai[0].messages[1].content.includes('121.445839'), false);
+  assert.ok(calls.ai.every(body => body.thinking?.type === 'disabled'));
 });
 
 test('at most three rounds and twelve AMap calls, even if AI wants more', async () => {
