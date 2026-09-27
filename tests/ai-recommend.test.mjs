@@ -71,7 +71,7 @@ test('AI changes search terms and receives real POI candidates', async () => {
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.body.restaurants.map(item => item.id), ['real-1']);
   assert.equal(res.body.diagnostics.searchRounds, 2);
-  assert.equal(res.body.diagnostics.amapCalls, 8);
+  assert.equal(res.body.diagnostics.amapCalls, 9);
   assert.equal(calls.convert, 1);
   assert.equal(calls.ai[0].messages[1].content.includes('121.445839'), false);
 });
@@ -82,7 +82,8 @@ test('at most three rounds and twelve AMap calls, even if AI wants more', async 
   const res = response();
   await handler(request(), res);
   assert.equal(res.statusCode, 200);
-  assert.equal(calls.amap.length, 12);
+  assert.equal(calls.amap.length, 11);
+  assert.equal(calls.amap.length + calls.convert, 12);
   assert.equal(res.body.diagnostics.searchRounds, 3);
   assert.equal(calls.ai.at(-1).tool_choice, 'none');
   assert.ok(calls.amap.every(params => params.get('types') === '050000'));
