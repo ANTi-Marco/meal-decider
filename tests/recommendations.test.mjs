@@ -7,6 +7,9 @@ const start = html.indexOf('    function recent(');
 const end = html.indexOf('    function recipeList()', start);
 assert.ok(start > 0 && end > start, 'recommendation functions should exist');
 const recommend = new Function('state', 'liveRestaurants', 'sessionSeen', `${html.slice(start, end)};return restaurantList()`);
+const feedback = new Function('state', `${html.slice(start, end)};return {feedbackSignals,feedbackWeight,recent}`);
+const recipeEnd = html.indexOf('    function distanceText(', end);
+const recommendRecipes = new Function('state', 'recipes', 'sessionSeen', 'Math', `${html.slice(start, recipeEnd)};return recipeList()`);
 const tagStart = html.indexOf('    function inferRestaurantTags(');
 const tagEnd = html.indexOf('    async function loadAmapRestaurants()', tagStart);
 assert.ok(tagStart > 0 && tagEnd > tagStart, 'restaurant tag rules should exist');
@@ -69,4 +72,32 @@ test('product feedback entry is separate from local meal history', () => {
   assert.match(html, /id="openProductFeedback"/);
   assert.match(html, /fetch\('\/api\/feedback'/);
   assert.match(html, /id="saveFeedback"/);
+});
+
+test('liked categories gain weight only after three days, while disliked categories lose much more', () => {
+  const now = Date.now();
+  const state = { history: [
+    { id: 'amap-liked', kind: 'restaurant', category: '面馆', rating: 'great', at: now - 2 * 86400000 },
+    { id: 'amap-disliked', kind: 'restaurant', category: '火锅店', rating: 'no', at: now - 86400000 },
+  ], activeMeal: null };
+  const { feedbackSignals, feedbackWeight, recent } = feedback(state);
+  assert.equal(feedbackWeight({ id: 'amap-new-noodle', kind: 'restaurant', category: '面馆' }, feedbackSignals('restaurant')), 1);
+  assert.equal(recent('amap-liked'), true);
+  assert.ok(feedbackWeight({ id: 'amap-new-hotpot', kind: 'restaurant', category: '火锅店' }, feedbackSignals('restaurant')) < .25);
+  state.history[0].at = now - 4 * 86400000;
+  assert.ok(feedbackWeight({ id: 'amap-new-noodle', kind: 'restaurant', category: '面馆' }, feedbackSignals('restaurant')) > 1.4);
+  assert.equal(recent('amap-liked'), false);
+  assert.ok(feedbackWeight({ id: 'amap-disliked', kind: 'restaurant', category: '火锅店' }, feedbackSignals('restaurant')) < .05);
+});
+
+test('recipe recommendation prefers a liked category and heavily demotes a disliked category', () => {
+  const now = Date.now();
+  const state = { tastes: ['随便'], nutrition: 'none', history: [
+    { id: 'past-soup', kind: 'recipe', category: '汤', rating: 'great', at: now - 4 * 86400000 },
+    { id: 'past-fried', kind: 'recipe', category: '炸', rating: 'no', at: now - 4 * 86400000 },
+  ], activeMeal: null };
+  const recipes = ['汤', '炸', '面'].map((category, index) => ({ id: `new-${index}`, kind: 'recipe', category, tags: [], difficulty: '中等' }));
+  const deterministicMath = Object.assign(Object.create(Math), { random: () => 0 });
+  const result = recommendRecipes(state, recipes, new Set(), deterministicMath);
+  assert.deepEqual(result.map(item => item.category), ['汤', '面', '炸']);
 });

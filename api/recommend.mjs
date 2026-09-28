@@ -37,7 +37,19 @@ function validate(body) {
   const excludePoiIds = Array.isArray(body.excludePoiIds)
     ? new Set(body.excludePoiIds.slice(0, 300).filter(id => typeof id === 'string' && /^[\w-]{2,40}$/.test(id)))
     : new Set();
-  return { radius, budget, people, tastes, nutrition, lng, lat, hasCoords, address, excludePoiIds };
+  const rawFeedback = body.feedbackPreferences && typeof body.feedbackPreferences === 'object' ? body.feedbackPreferences : {};
+  const categories = new Map();
+  const items = new Map();
+  for (const entry of (Array.isArray(rawFeedback.categories) ? rawFeedback.categories : []).slice(0, 60)) {
+    if (typeof entry?.category === 'string' && entry.category.length <= 80 && !/[\r\n]/.test(entry.category)
+      && Number.isFinite(entry.score)) categories.set(entry.category, Math.max(-20, Math.min(20, entry.score)));
+  }
+  for (const entry of (Array.isArray(rawFeedback.items) ? rawFeedback.items : []).slice(0, 100)) {
+    if (typeof entry?.id === 'string' && /^[\w-]{2,40}$/.test(entry.id)
+      && Number.isFinite(entry.score)) items.set(entry.id, Math.max(-20, Math.min(20, entry.score)));
+  }
+  return { radius, budget, people, tastes, nutrition, lng, lat, hasCoords, address, excludePoiIds,
+    feedbackPreferences: { categories, items } };
 }
 
 function withinBudget(poi, budget) {
@@ -51,6 +63,12 @@ function compatibleWithNutrition(poi, nutrition) {
   if (!['light', 'lowcal'].includes(nutrition)) return true;
   const label = `${poi.name} ${poi.type} ${poi.category}`;
   return !/(火锅|烧烤|烤肉|炸鸡|炸串|油炸|麻辣香锅|干锅)/.test(label);
+}
+
+function feedbackWeight(poi, input) {
+  const { categories, items } = input.feedbackPreferences;
+  const score = (categories.get(poi.category) || 0) + (items.get(poi.id) || 0);
+  return Math.max(.03, Math.min(2.5, Math.exp(score * .4)));
 }
 
 function searchAreas(center, radius) {
@@ -107,9 +125,10 @@ async function cachedAmapSearch(area, keyword, key, signal, diagnostics) {
   }
 }
 
-function publicPoi(poi) {
+function publicPoi(poi, input) {
   return { id: poi.id, name: poi.name, type: poi.type, category: poi.category,
-    distance: poi.distance, cost: poi.cost, address: poi.address };
+    distance: poi.distance, cost: poi.cost, address: poi.address,
+    feedbackPriority: Number(feedbackWeight(poi, input).toFixed(2)) };
 }
 
 function safeReason(code, poi) {
@@ -166,16 +185,27 @@ function parseKeywords(content, input) {
   } catch { return fallbackKeywords(input); }
 }
 
-function fallbackSelection(candidates, radius) {
+function fallbackSelection(candidates, radius, input) {
   const buckets = [[], [], []];
   for (const poi of candidates.values()) buckets[Math.min(2, Math.floor(poi.distance / radius * 3))].push(poi);
+  const pick = bucket => {
+    const total = bucket.reduce((sum, poi) => sum + feedbackWeight(poi, input), 0);
+    let draw = Math.random() * total;
+    for (const poi of bucket) {
+      draw -= feedbackWeight(poi, input);
+      if (draw <= 0) return poi;
+    }
+    return bucket[bucket.length - 1];
+  };
   const selected = [];
   for (const bucket of buckets) {
-    if (bucket.length && selected.length < 3) selected.push(bucket[Math.floor(Math.random() * bucket.length)]);
+    if (bucket.length && selected.length < 3) selected.push(pick(bucket));
   }
   const remaining = [...candidates.values()].filter(poi => !selected.some(item => item.id === poi.id));
   while (selected.length < 3 && remaining.length) {
-    selected.push(remaining.splice(Math.floor(Math.random() * remaining.length), 1)[0]);
+    const chosen = pick(remaining);
+    selected.push(chosen);
+    remaining.splice(remaining.indexOf(chosen), 1);
   }
   return selected;
 }
@@ -236,14 +266,14 @@ async function recommend(input, amapKey, aiKey, signal) {
 
   const buckets = [[], [], []];
   for (const poi of candidates.values()) buckets[Math.min(2, Math.floor(poi.distance / input.radius * 3))].push(poi);
-  const sampled = buckets.flatMap(bucket => bucket.slice(0, 25));
+  const sampled = buckets.flatMap(bucket => bucket.sort((a, b) => feedbackWeight(b, input) - feedbackWeight(a, input)).slice(0, 25));
   let choices;
   diagnostics.aiCalls++;
   aiStarted = Date.now();
   try {
     const selection = await deepseek([
-      { role: 'system', content: '你是选餐厅助手。只能从提供的真实高德 POI 中选择最多三家。不要编造评分、热量、价格或营养数据；店名和类型只是线索。返回 JSON：{"choices":[{"id":"原始POI ID","reasonCode":"taste|nutrition|group|budget|distance"}]}。如果偏好线索不足，仍可选择合理候选并使用 distance。' },
-      { role: 'user', content: JSON.stringify({ ...preferences, restaurants: sampled.map(publicPoi) }) },
+      { role: 'system', content: '你是选餐厅助手。只能从提供的真实高德 POI 中选择最多三家。不要编造评分、热量、价格或营养数据；店名和类型只是线索。feedbackPriority 是用户过往喜欢或不喜欢相同类别的排序权重，低于 1 的店应显著降权，但不是硬性禁止。返回 JSON：{"choices":[{"id":"原始POI ID","reasonCode":"taste|nutrition|group|budget|distance"}]}。如果偏好线索不足，仍可选择合理候选并使用 distance。' },
+      { role: 'user', content: JSON.stringify({ ...preferences, restaurants: sampled.map(poi => publicPoi(poi, input)) }) },
     ], aiKey, signal);
     const parsed = JSON.parse(String(selection.content || '').replace(/^```(?:json)?\s*|\s*```$/g, ''));
     if (!Array.isArray(parsed.choices)) throw new Error('AI_INVALID_OUTPUT');
@@ -251,7 +281,7 @@ async function recommend(input, amapKey, aiKey, signal) {
   } catch (error) {
     if (signal.aborted) throw error;
     diagnostics.aiSelectionFallback = true;
-    choices = fallbackSelection(candidates, input.radius).map(poi => ({ id: poi.id, reasonCode: 'distance' }));
+    choices = fallbackSelection(candidates, input.radius, input).map(poi => ({ id: poi.id, reasonCode: 'distance' }));
   } finally {
     diagnostics.aiDurationMs += Date.now() - aiStarted;
   }
@@ -267,9 +297,22 @@ async function recommend(input, amapKey, aiKey, signal) {
   }
   if (!restaurants.length && candidates.size && !diagnostics.aiSelectionFallback) {
     diagnostics.aiSelectionFallback = true;
-    for (const poi of fallbackSelection(candidates, input.radius)) {
+    for (const poi of fallbackSelection(candidates, input.radius, input)) {
       restaurants.push({ ...poi, reason: safeReason('distance', poi) });
     }
+  }
+  if (input.feedbackPreferences.categories.size || input.feedbackPreferences.items.size) {
+    const selectedIds = new Set(restaurants.map(poi => poi.id));
+    const alternatives = [...candidates.values()].filter(poi => !selectedIds.has(poi.id))
+      .sort((a, b) => feedbackWeight(b, input) - feedbackWeight(a, input));
+    for (let index = 0; index < restaurants.length; index++) {
+      if (feedbackWeight(restaurants[index], input) >= .4) continue;
+      const replacementIndex = alternatives.findIndex(poi => feedbackWeight(poi, input) >= .9);
+      if (replacementIndex < 0) break;
+      const [replacement] = alternatives.splice(replacementIndex, 1);
+      restaurants[index] = { ...replacement, reason: safeReason('distance', replacement) };
+    }
+    restaurants.sort((a, b) => feedbackWeight(b, input) - feedbackWeight(a, input));
   }
   return { restaurants, diagnostics };
 }

@@ -190,3 +190,18 @@ test('DeepSeek selection authentication failure falls back to verified AMap cand
   assert.equal(calls.ai.length, 2);
   assert.doesNotMatch(JSON.stringify(res.body), /test-deepseek|Bearer/);
 });
+
+test('AI recommendations demote a disliked category and prefer a liked one without inventing POIs', async () => {
+  const calls = mockApi({ pois: [
+    { ...poi('hotpot', 121.45, 31.224), type: '餐饮服务;火锅店' },
+    { ...poi('noodle', 121.451, 31.224), type: '餐饮服务;面馆' },
+    { ...poi('simple', 121.452, 31.224), type: '餐饮服务;快餐厅' },
+  ], choices: [{ id: 'hotpot', reasonCode: 'taste' }, { id: 'noodle', reasonCode: 'taste' }] });
+  const res = response();
+  await handler(request({ range: '1', tastes: ['随便'], nutrition: 'none', feedbackPreferences: {
+    categories: [{ category: '火锅店', score: -4 }, { category: '面馆', score: 1 }], items: [],
+  } }), res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.restaurants.map(item => item.id), ['noodle', 'simple']);
+  assert.ok(calls.ai[1].messages[1].content.includes('feedbackPriority'));
+});
