@@ -68,6 +68,19 @@ test('AMap link keeps its original new-tab behavior', () => {
   assert.match(html.slice(start, end), /target="_blank"/);
 });
 
+test('Meituan link carries the restaurant query into the mobile search route', () => {
+  const textStart = html.indexOf('function meituanSearchText(');
+  const urlStart = html.indexOf('function meituanSearchUrl(', textStart);
+  const placeStart = html.indexOf('function placeLinks(', urlStart);
+  assert.ok(textStart > 0 && urlStart > textStart && placeStart > urlStart);
+  const searchText = new Function('item', `${html.slice(textStart, urlStart)};return meituanSearchText(item)`);
+  const searchUrl = new Function('item', 'meituanSearchText', `${html.slice(urlStart, placeStart)};return meituanSearchUrl(item)`);
+  const item = { name: '小店', address: '静安寺' };
+  assert.equal(searchText(item), '小店 静安寺');
+  assert.equal(searchUrl(item, searchText), 'https://i.meituan.com/s/-%E5%B0%8F%E5%BA%97%20%E9%9D%99%E5%AE%89%E5%AF%BA/');
+  assert.doesNotMatch(html, /handleMeituanSearch|navigator\.clipboard/);
+});
+
 test('product feedback entry is separate from local meal history', () => {
   assert.match(html, /id="openProductFeedback"/);
   assert.match(html, /fetch\('\/api\/feedback'/);
