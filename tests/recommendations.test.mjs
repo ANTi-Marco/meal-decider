@@ -76,8 +76,8 @@ test('Meituan link carries the restaurant query into the mobile search route', (
   const searchText = new Function('item', `${html.slice(textStart, urlStart)};return meituanSearchText(item)`);
   const searchUrl = new Function('item', 'meituanSearchText', `${html.slice(urlStart, placeStart)};return meituanSearchUrl(item)`);
   const item = { name: '小店', address: '静安寺' };
-  assert.equal(searchText(item), '小店 静安寺');
-  assert.equal(searchUrl(item, searchText), 'https://i.meituan.com/s/-%E5%B0%8F%E5%BA%97%20%E9%9D%99%E5%AE%89%E5%AF%BA/');
+  assert.equal(searchText(item), '小店');
+  assert.equal(searchUrl(item, searchText), 'https://i.meituan.com/s/-%E5%B0%8F%E5%BA%97/');
   assert.doesNotMatch(html, /handleMeituanSearch|navigator\.clipboard/);
 });
 
